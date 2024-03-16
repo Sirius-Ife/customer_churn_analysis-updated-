@@ -1,0 +1,460 @@
+---
+title: "smote-predicting-customer-churn.ipynb"
+author: "sirius_ife"
+date: "2024-03-14"
+output: html_document
+---
+
+# Introduction
+
+Retaining customers is key to a company's success, especially in an industry as competitive as wireless services. Acquiring new customers is not only more difficult, but also much more costly to companies than maintaining existing customer relationships. In this notebook, I will predict behavior to retain customers at a home phone and internet service provider called Telco. I'll first use exploratory data analysis to understand the relationships between the features and the target variable and identify factors that are influential in predicting customer attrition. Using these features, I'll develop a predictive model to help the company proactively reduce their churn rate and use insights from the model to strengthen their customer retention strategies.
+
+# Data Overview
+
+The [dataset](https://www.kaggle.com/datasets/blastchar/telco-customer-churn) from Telco consists of 7,043 records with twenty attributes divided into two categories: customer demographic data and  information related to their wireless accounts. The demographic features include the customer's gender, whether they have a partner, dependents, and are 65 years or older. The features related to their account information include how long the customer has been with Telco, their monthly and total charges, the contract each customer carries (month-to-month, one year, or two years), and the type of phone, internet, and TV services they have. Our target variable for this study is `Churn`, a binary indicator that represents whether or not the customer left within the last month. 
+
+There were 11 customers with missing `TotalCharges`. Since it is a fairly small amount, these observations will be removed prior to beginning the analysis, leaving 7,032 customers in the data set. In addition, several of the `Yes`/`No` categorical variables contained an additional group indicating that the customer had no phone or internet service. These were recoded and combined with the value `No`.
+
+```{r}
+suppressMessages(library(tidyverse))
+suppressMessages(library(caret))
+suppressMessages(library(reshape2))
+suppressMessages(library(broom))
+suppressMessages(library(randomForest))
+suppressMessages(library(performanceEstimation))
+suppressMessages(library(regclass))
+suppressMessages(library(GGally))
+suppressMessages(library(pROC))
+suppressMessages(library(plotROC))
+suppressMessages(library(cowplot))
+suppressMessages(library(grid))
+suppressMessages(library(gridExtra))
+suppressMessages(library(formattable))
+suppressMessages(library(scales))
+theme_set(theme_minimal())
+options(warn=-1)
+
+telco <- read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv", show_col_types = FALSE) %>%
+  mutate_if(is.character, factor)
+
+telco$SeniorCitizen <- as.factor(telco$SeniorCitizen)
+
+telco <- telco %>% 
+  select(-customerID) %>% 
+  mutate_at(7, ~as.factor(case_when(. == "No phone service" ~ "No",
+                                    . == "No" ~ "No", TRUE ~ "Yes"))) %>% 
+  mutate_at(8, ~as.factor(case_when(. == "Fiber optic" ~ "FiberOptic",
+                                    . == "DSL" ~ "DSL", TRUE ~ "No"))) %>% 
+  mutate_at(c(9:14), ~as.factor(case_when(. == "No internet service" ~ "No", 
+                                          . == "No" ~ "No", TRUE ~ "Yes"))) %>%
+  mutate_at(17, ~as.factor(case_when(. == "Bank transfer (automatic)" ~ "BankTransferAuto", 
+                                     . == "Credit card (automatic)" ~ "CreditCardAuto", 
+                                     . == "Electronic check" ~ "ECheck", TRUE ~ "MailedCheck"))) %>% 
+  na.omit()
+
+telco %>% 
+  group_by(gender) %>% 
+  rename("Gender" = gender) %>% 
+  summarise("Number of Observations" = n(),
+            "Average Tenure, in months" = round(mean(tenure), 0),
+            "Monthly Charges" = round(mean(MonthlyCharges), 2))
+```
+
+Based on the overall gender composition of our sample, there is an approximately equal proportion of men and women in the data set. Their average bill is around $65/month, and the tenure of both groups is a little over 2 and a half years, with men staying slightly longer than women on average.
+
+# EDA
+
+```{r}
+t2 <- telco %>% 
+  mutate(Churn2 = as.factor(ifelse(Churn == "Yes", "Former Customers", "Current Customers"))) 
+
+g1 <- ggplot(t2, aes(x = fct_rev(Churn2), y = tenure, fill = fct_rev(Churn2))) +
+  geom_bar(stat = "summary", fun = "mean", alpha = 0.6, color = "grey20", show.legend = F) +
+  stat_summary(aes(label = paste(round(after_stat(y), 0), "months")), fun = mean, 
+               geom = "text", size = 3.5, vjust = -0.5) +
+  labs(title = "Average Customer Tenure \n", x = "", y = "Customer Tenure\n") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+g2 <- ggplot(t2, aes(x = fct_rev(Churn2), y = MonthlyCharges, fill = fct_rev(Churn2))) +
+  geom_bar(stat = "summary", fun = "mean", alpha = 0.6, color = "grey20", show.legend = F) +
+  stat_summary(aes(label = dollar(after_stat(y))), fun = mean, 
+               geom = "text", size = 3.5, vjust = -0.5) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(title = "Average Monthly Charges \n", x = "", y = "Monthly Charges \n") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+g3 <- ggplot(t2, aes(x = Contract, y = MonthlyCharges, fill = fct_rev(Churn2))) +
+  geom_bar(position = "dodge", stat = "summary", fun = "mean", alpha = 0.6, color = "grey20") +
+  stat_summary(aes(label = dollar(after_stat(y))), fun = mean, 
+               geom = "text", size = 3.5, vjust = -0.5,
+               position = position_dodge(width = 0.9)) +
+  coord_cartesian(ylim = c(0, 95)) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(title = "\nAverage Monthly Charges by Contract Type", x = "\n Contract Type", 
+       y = "Monthly Charges \n", fill = "") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "top", legend.justification = "left")
+
+options(repr.plot.width=10, repr.plot.height=14)
+grid.arrange(g1, g2, g3, ncol = 2, nrow = 2, layout_matrix = rbind(c(1,2), c(3,3)))
+```
+
+The graphs above show the average tenure of Telco's current and former customers and their monthly charges. Telco's current customers have been with the company for just over 3 years, while customers who left kept their services for about 18 months. Additionally, former customers had higher monthly charges on average by about $13. This holds true across each contract type. 
+
+## What type of account services do customers have?
+
+```{r}
+g1 <- ggplot(t2, aes(x = Contract, group = fct_rev(Churn2))) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat = "count",
+           alpha = 0.6, color = "grey20", show.legend = F) +
+  geom_text(aes(label = percent(..prop..), y = ..prop.. ), 
+            size = 4, stat = "count", vjust = -0.5) +
+  facet_grid(~fct_rev(Churn2)) +
+  scale_y_continuous(labels = percent_format()) +
+  coord_cartesian(ylim = c(0, .95)) +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "Customer Churn by Contract Type\n", x = "\n Contract Type", y = "") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+g2 <- ggplot(t2, aes(x = InternetService, group = fct_rev(Churn2))) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat = "count",
+           alpha = 0.6, color = "grey20", show.legend = F) +
+  geom_text(aes(label = percent(..prop..), y = ..prop.. ), 
+            size = 4, stat = "count", vjust = -0.5) +
+  facet_grid(~fct_rev(Churn2)) +
+  scale_y_continuous(labels = percent_format()) +
+  coord_cartesian(ylim = c(0, .9)) +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "\n Customer Churn by Internet Service \n", x = "\n Internet Service", y = "") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(g1, g2, ncol = 1)
+```
+
+Nearly 89% of former customers were on month-to-month contracts, with a much smaller proportion in one or two-year contracts. Of customers who left, a little over 69% had Fiber Optic internet. This could be an indicator of potential dissatisfaction with the service and should be further reviewed by the company since currently over a third of their customers have this type of internet.
+
+## Customer Attrition Demographics
+
+```{r}
+g1 <- ggplot(t2, aes(x = fct_rev(ifelse(SeniorCitizen==1, "Yes", "No")), group = Churn2)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat = "count",
+           alpha = 0.6, color = "grey20", show.legend = F) +
+  geom_text(aes(label = percent(..prop.., accuracy = 0.1), y = ..prop..), 
+            size = 4, stat = "count", position = position_stack(vjust = 0.5)) +
+  facet_grid(~fct_rev(Churn2)) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  coord_cartesian(ylim = c(0, .9)) +
+  labs(x = "\n Senior Citizen", y = "")
+
+g2 <- ggplot(t2, aes(x = gender, group = Churn2)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat = "count",
+           alpha = 0.6, color = "grey20", show.legend = F) +
+  geom_text(aes(label = percent(..prop.., accuracy = 0.1), y = ..prop..), 
+            size = 4, stat = "count", position = position_stack(vjust = 0.5)) +
+  facet_grid(~fct_rev(Churn2)) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  coord_cartesian(ylim = c(0, .6)) +
+  labs(x = "\n Gender", y = "")
+
+options(repr.plot.width=12, repr.plot.height=7)
+grid.arrange(g1, g2, nrow = 1, top = textGrob("Customer Attrition Demographics \n",
+                                              gp = gpar(fontsize = 14)))
+```
+
+Based on the demographic attributes of Telco's customers, about a quarter of those who left were senior citizens, and just under 13% of their current customers are 65 years or older. The distribution of gender is proportional in both current and former customers, with an approximately equal number of men and women leaving within the last month. 
+
+## Distributions and Correlations
+
+```{r}
+options(repr.plot.width=12, repr.plot.height=10)
+telco %>% 
+  select(tenure, MonthlyCharges, TotalCharges, Churn) %>%
+  ggpairs(aes(color = fct_rev(Churn)), title = "Customer Account Distributions and Correlations \n",
+          columnLabels = c("Tenure", "Monthly Charges", "Total Charges", "Churn"),
+          upper = list(combo = wrap("box_no_facet", alpha = 0.7)),
+          diag = list(continuous = wrap("densityDiag", alpha = 0.6), 
+                      discrete = wrap("barDiag", alpha = 0.7, color = "grey30")),
+          lower = list(combo = wrap("box_no_facet", alpha = 0.7), continuous = wrap("smooth", alpha = 0.15))) 
+```
+
+The correlations between our numeric variables show that `TotalCharges` is strongly correlated with customer tenure, especially among customers who left (`Churn = Yes`), with a correlation of more than 0.95. There is also a slightly positive relationship between `MonthlyCharges` and `Tenure` of 0.25 and it is significant. The histogram of `MonthlyCharges` has a unique shape that appears to be multimodal, while the distribution of customer tenure is relatively uniform among current customers but skewed to the right in customers who left.
+
+# Data Preprocessing
+
+Our target variable, `Churn`, is quite imbalanced with a little over 26% (1,869 customers) leaving the company within the past month. Since class imbalance can negatively affect the precision and recall accuracy of statistical models, I will use a **s**ynthetic **m**inority **o**ver-sampling **te**chnique known as **[smote](https://rdrr.io/cran/performanceEstimation/man/smote.html)** to create a more evenly distributed training set. 
+
+The `smote` algorithm artificially generates new instances of the minority class using the nearest neighbors of these cases and under-samples the majority class to create a more balanced data set. After applying `smote`, our training set now consists of an equal proportion of current and former customers.
+
+```{r}
+telco <- telco %>% 
+  mutate_at(15, ~as.factor(case_when(. == "One year" ~ "OneYear", 
+                                     . == "Two year" ~ "TwoYear", 
+                                     TRUE ~ "Month-to-month"))) 
+
+set.seed(1)
+ind <- createDataPartition(telco$Churn, p = 0.7, list = F)
+telco.train <- telco[ind,]
+telco.test <- telco[-ind,]
+train.resamp <- smote(Churn ~ ., data = data.frame(telco.train), perc.over = 1, perc.under = 2)
+
+g1 <- ggplot(t2, aes(x = fct_rev(Churn2), fill = fct_rev(Churn2))) +
+  geom_bar(alpha = 0.6, color = "grey30", show.legend = F) + 
+  geom_text(stat = "count", size = 3.5, 
+            aes(label = paste("n = ", formatC(..count.., big.mark = ","))), vjust = -0.5) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(subtitle = "Before Resampling\n", x = "", y = "Number of Customers\n")
+
+g2 <- ggplot(train.resamp, aes(x = fct_rev(ifelse(Churn == "Yes", "Former Customers", "Current Customers")), 
+                               fill = fct_rev(Churn))) +
+  geom_bar(alpha = 0.6, color = "grey30", show.legend = F) + 
+  geom_text(stat = "count", size = 3.5, 
+            aes(label = paste("n = ", formatC(..count.., big.mark = ","))), vjust = -0.5) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(subtitle = "After Resampling\n", x = "", y = "")
+
+options(repr.plot.width=9, repr.plot.height=7)
+grid.arrange(g1, g2, nrow = 1, top = textGrob("Distribution of Customer Churn\n",
+                                              gp = gpar(fontsize = 14)))
+```
+
+# Feature Selection
+
+To identify which features should be included in the models, I will use a two-step process. First, I will check the chi-squared tests of independence between the categorical features and include only variables that have a statistically significant association to our response, `Churn`. Then, I will use the random forest algorithm to identify the most important predictors of customer churn. 
+
+## Chi-Squared Tests
+
+The Chi-Squared Test of Independence evaluates the association between two categorical variables. The null hypothesis for this test is that there is no relationship between our response variable and the categorical feature, and the alternative hypothesis is that that there is a relationship. Looking at the results of the tests, `Gender` and `PhoneService` have very small chi-squared statistics and p-values that are greater than the significance threshold, $a$, of 0.05, indicating they are independent of our target variable. The rest of the categorical features do have a statistically significant association to customer churn.
+
+```{r}
+cat.var <- telco[,sapply(telco, is.factor)]
+chi <- lapply(cat.var[,-17], function(x) chisq.test(cat.var[,17], x))
+do.call(rbind, lapply(chi, tidy)) %>%
+  arrange(p.value) %>%
+  mutate_at(c(1,2), funs(round(., 3)))
+```
+
+## Variable Importance
+
+The random forest algorithm uses two measures in calculating variable importance, mean decrease in Gini and mean decrease in accuracy. The [mean decrease in Gini](https://www.rdocumentation.org/packages/randomForest/versions/4.6-14/topics/importance) is the total decrease in node impurities from splitting on the variable measured by the Gini index, averaged over all trees in the model. The [mean decrease in accuracy](https://www.rdocumentation.org/packages/randomForest/versions/4.6-14/topics/importance), also called permutation importance, measures the average decrease in prediction accuracy when the values of each variable are randomly permuted in the out-of-bag samples.
+
+```{r}
+set.seed(1)
+rf.features <- train(Churn ~ ., data = telco, method = "rf", importance = TRUE,
+                     preProcess = c("center","scale"),
+                     trControl = trainControl(method = "cv"))
+
+df <- data.frame(importance(rf.features$finalModel)) %>% 
+  rownames_to_column(var = "var")
+
+g1 <- df %>% 
+  slice_max(MeanDecreaseGini, n = 10) %>% 
+  ggplot(aes(x = MeanDecreaseGini, y = reorder(var, MeanDecreaseGini))) + 
+  geom_point(color = "#1C9099", size = 1.5) +
+  geom_segment(aes(x = 0, xend = MeanDecreaseGini, y = var, yend = var), color = "#1C9099") +
+  labs(x = "\nMean Decrease in Gini", y = "") +
+  theme(panel.grid.minor.x = element_blank())
+
+g2 <- df %>% 
+  slice_max(MeanDecreaseAccuracy, n = 10) %>% 
+  ggplot(aes(x = MeanDecreaseAccuracy, y = reorder(var, MeanDecreaseAccuracy))) + 
+  geom_point(color = "#1C9099", size = 1.5) +
+  geom_segment(aes(x = 0, xend = MeanDecreaseAccuracy, y = var, yend = var), color = "#1C9099") +
+  labs(x = "\nMean Decrease in Accuracy", y = "") +
+  theme(panel.grid.minor.x = element_blank())
+
+options(repr.plot.width=12, repr.plot.height=7)
+grid.arrange(g1, g2, nrow = 1, top = "Random Forest Variable Importance (Top 10)")
+
+```
+
+Based on the plot of the most important variables, both measures include `Tenure`, `TotalCharges`, `MonthlyCharges`, `InternetService`, `PaymentMethod`, `Contract`,  `OnlineSecurity`, `TechSupport`, and `PaperlessBilling`. Due to its collinearity with `Tenure`, all of the features except for `TotalCharges` will be selected as predictors in the models.
+
+# Predicting Customer Churn
+
+## Methodology
+To predict which customers are most likely to churn, several different types of classification models will be evaluated, including logistic regression, discriminant analysis, support vector machines, and random forests. Since the numeric predictors, `MonthlyCharges` and `Tenure`, have skewed distributions and varying scales, I will apply a preprocessing technique that normalizes the features to have a mean of 0 and a standard deviation of 1. 
+
+To fit the models, 10-fold cross-validation will be used and the model will be tested on the out of sample dataset. This set was held out of resampling and is more representative of the true class distribution.
+
+## Logistic Regression
+
+Logistic regression is a parametric classification technique that estimates the probability of an event occurring, for instance, whether or not a customer will leave the company. One of the advantages of the logistic model is the interpretability of the model parameters. Based on the size of the coefficients and the significance of the predictors, the model is able to quantify the relationships between our response and the input features.
+
+```{r}
+set.seed(21)
+ctrl <- trainControl(method = "cv", number = 10, classProbs = TRUE, 
+                     summaryFunction = twoClassSummary)
+glm.fit <- train(Churn ~ tenure + MonthlyCharges + InternetService + PaymentMethod + 
+                 Contract + OnlineSecurity + TechSupport + PaperlessBilling, 
+                 data = train.resamp, method = "glm", metric = "ROC",
+                 preProcess = c("center", "scale"), trControl = ctrl)
+glm.preds <- glm.fit %>% predict(telco.test)
+glm.cm <- data.frame(Logistic=confusionMatrix(glm.preds, telco.test$Churn, 
+                                              positive = "Yes", mode = "everything")$byClass)
+confusionMatrix(glm.preds, telco.test$Churn, positive = "Yes", mode = "everything")
+```
+
+Our logistic regression model has an overall accuracy of 76.3% and a precision of 53.6% on the test set. This means that when the model predicts a customer will leave, it is correct around 54% of the time. The recall of our model is 81.4%, which means that it correctly identified about 81% of all customers who left.
+
+### Multicollinearity
+
+One of the assumptions of logistic regression is that the predictors are not too highly correlated with each other. The Variance Inflation Factor (VIF) measures the amount of multicollinearity between the features in the model. A general rule of thumb is a VIF score of no higher than between 5 and 10. Since the majority of the predictors have a VIF of less than 5 and none exceed 10, we are good.
+
+```{r}
+data.frame("VIF" = VIF(glm.fit$finalModel)) %>% 
+  arrange(desc(VIF))
+```
+
+## Quadratic Discriminant Analysis
+
+The next model I will try using is Quadratic Discriminant Analysis (QDA), which is a compromise between logistic regression and nonparametric methods. The QDA model allows for quadratic decision boundaries and can produce better results when the data is moderately non-linear.
+
+```{r}
+qda.fit <- train(Churn ~ tenure + MonthlyCharges + InternetService + PaymentMethod + 
+                 Contract + OnlineSecurity + TechSupport + PaperlessBilling, 
+                 data = train.resamp, method = "qda", metric = "ROC",
+                 preProcess = c("center","scale"), trControl = ctrl)
+qda.preds <- qda.fit %>% predict(telco.test)
+qda.cm <- data.frame(QDA=confusionMatrix(qda.preds, telco.test$Churn, 
+                                         positive = "Yes", mode = "everything")$byClass)
+confusionMatrix(qda.preds, telco.test$Churn, positive = "Yes", mode = "everything")
+```
+
+The QDA model improved the recall to 83%, although the overall accuracy and precision decreased to 73% and 50% respectively.
+
+## Support Vector Machine
+
+Support vector machines (SVMs) are a commonly used statistical learning model. It is nonparametric, which means that it does not make any assumptions about the data like logistic regression does. SVMs involve finding a hyperplane that separates the data as well as possible and maximizes the distance between the classes of our response variable.
+
+```{r}
+svm.fit <- train(Churn ~ tenure + MonthlyCharges + InternetService + PaymentMethod + 
+                 Contract + OnlineSecurity + TechSupport + PaperlessBilling, 
+                 data = train.resamp, method = "svmLinear", metric = "ROC",
+                 preProcess = c("center","scale"), trControl = ctrl)
+svm.preds <- svm.fit %>% predict(telco.test)
+svm.cm <- data.frame(SVM=confusionMatrix(svm.preds, telco.test$Churn, 
+                                         positive = "Yes", mode = "everything")$byClass)
+confusionMatrix(svm.preds, telco.test$Churn, positive = "Yes", mode = "everything")
+```
+
+The accuracy of the linear support vector machine is about 70% and the precision is 46%, which is not an improvement from the previous two models. The recall did increase to 85%, which is the highest so far.
+
+## Random Forest
+
+Random forest is a commonly used ensemble technique in machine learning. The model is built using a combination of many decision trees, where each takes a random sample of the data with replacement and selects a random subset of predictors, resulting in a relatively uncorrelated set of decision trees. Each tree then makes a prediction and the class with the most votes becomes the model's final prediction.
+
+```{r}
+rf.fit <- train(Churn ~ tenure + MonthlyCharges + InternetService + PaymentMethod + 
+                Contract + OnlineSecurity + TechSupport + PaperlessBilling,
+                data = train.resamp, method = "rf", metric = "ROC",
+                preProcess = c("center","scale"), trControl = ctrl)
+rf.preds <- rf.fit %>% 
+  predict(telco.test)
+rf.cm <- data.frame(rf=confusionMatrix(rf.preds, telco.test$Churn, 
+                                       positive = "Yes", mode = "everything")$byClass)
+confusionMatrix(rf.preds, telco.test$Churn, positive = "Yes", mode = "everything")
+```
+
+The random forest classifier has an accuracy of 76% and a precision of 53%, higher than the QDA and SVM but just below our logistic model. The recall of the model is about 79%, the lowest overall.
+
+# Model Evaluation and ROC Curves
+## Model Performance on the Test Set
+
+```{r}
+res.cm <- data.frame(glm.cm, qda.cm, svm.cm, rf.cm) %>% 
+  rename("Random Forest" = rf) 
+res <- data.frame(t(res.cm))
+rownames(res) <- colnames(res.cm)
+colnames(res) <- rownames(res.cm)
+res[,c(7,5,6,2,11)] %>% 
+  arrange(desc(F1)) %>% 
+  mutate_all(percent_format(accuracy = 0.1)) 
+```
+
+Out of the four models, logistic regression produces the highest [F1 score](https://en.wikipedia.org/wiki/F-score), which represents the balance between precision and recall, as well as the highest specificity, which measures how well the model identifies negative cases correctly. 
+
+## ROC Curves
+
+As a final step in model selection, I will plot the ROC curves of each model with their corresponding Area Under the Curve [(AUC)](https://developers.google.com/machine-learning/crash-course/classification/roc-and-auc). The Area Under the Curve measures the model's performance across all possible classification thresholds. A higher AUC indicates the model is better able to distinguish between the classes. 
+
+```{r}
+Logistic <- predict(glm.fit, telco.test, type = "prob")[,2]
+QDA <- predict(qda.fit, telco.test, type = "prob")[,2]
+SVM <- predict(svm.fit, telco.test, type = "prob")[,2]
+RandomForest <- predict(rf.fit, telco.test, type = "prob")[,2]
+
+roc.data <- cbind(telco.test[,20], Logistic, QDA, SVM, RandomForest)
+roc.long <- melt_roc(roc.data, d = "Churn", m = c("Logistic", "QDA", "SVM", "RandomForest"))
+
+rocplot <- ggplot(roc.long, aes(d = ifelse(D == "Yes", 1, 0), m = M, color = name)) +
+  geom_roc(n.cuts = 0) + 
+  style_roc(xlab = "\nFalse Positive Rate (1 - Specificity)", 
+            ylab = "True Positive Rate (Sensitivity)\n") +
+  labs(title = "ROC Curve Comparison on the Test Set", color = "Model") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+rocplot +
+  geom_abline(size = 0.5, color = "grey30") +
+  annotate("text",x=.75,y=.35,label=paste("AUC of Logistic =", round(calc_auc(rocplot)$AUC[1],3))) +
+  annotate("text",x=.75,y=.28,label=paste("AUC of QDA =", round(calc_auc(rocplot)$AUC[2],3))) +
+  annotate("text",x=.75,y=.21,label=paste("AUC of SVM =", round(calc_auc(rocplot)$AUC[4],3))) +
+  annotate("text",x=.75,y=.14,label=paste("AUC of Random Forest =", round(calc_auc(rocplot)$AUC[3],3))) +
+  scale_color_discrete(breaks = c("Logistic", "QDA", "SVM", "RandomForest"))
+```
+
+Out of the four classifiers, the logistic model has the highest Area Under the Curve of 0.854 on the test set. This represents the probability that our model will rate or rank a randomly chosen observation from the positive class, `Churn = Yes`, as more likely to be from that class than a randomly chosen nonpositive observation, `Churn = No` [(Hanley & McNeil, 1982)](https://pubs.rsna.org/doi/pdf/10.1148/radiology.143.1.7063747).
+
+# Key Findings
+
+Overall, the logistic regression model had the strongest performance on the test set. Based on the coefficients from the model, at least one category in all eight predictors has a significant association to customer attrition. A summary of the relationships of each, when all other variables are held constant, is listed in the table below.
+
+```{r}
+glm.fit <- train(Churn ~ tenure + MonthlyCharges + InternetService + PaymentMethod + 
+                 Contract + OnlineSecurity + TechSupport + PaperlessBilling, 
+                 data = telco, method = "glm", 
+                 preProcess = c("center", "scale"), 
+                 trControl = trainControl(method = "cv", number = 10))
+summary(glm.fit$finalModel)
+```
+
+```{r}
+OR <- coef(glm.fit$finalModel) %>% exp() %>% round(digits = 2) %>% as.data.frame() %>% slice(-c(1,6,8))
+data.frame(Predictor = c("Tenure", "MonthlyCharges", "InternetServiceFiberOptic", 
+                         "InternetServiceNo", "PaymentMethodECheck", "ContractOneYear", "ContractTwoYear",
+                         "OnlineSecurityYes", "TechSupportYes", "PaperlessBillingYes"),
+           OddsRatio = OR[,1],
+           Interpretation = c("A one month increase in tenure decreases the risk of churning by about 53%.",
+                              "For every $1 increase in monthly charges, we expect to see an increase in 
+                              the odds of churning by a factor of 1.39 or by 39%.",
+                              "Customers with fiber optic internet are 31% more likely to churn than those 
+                              with DSL.", "Those without internet are 28% less likely to churn than 
+                              customers with DSL internet.", "Customers who pay with electronic checks are 
+                              more likely to churn by a factor of 1.19 or by 19% compared to customers who use 
+                              automatic bank transfers.", "Customers on one-year contracts are 25% less likely 
+                              to churn than customers on month-to-month contracts.", "Customers 
+                              on two-year contracts are 44% less likely to churn compared to those on 
+                              month-to-month contracts.", "Customers with online security are 19% less likely 
+                              to churn than customers without online security.", "Customers with tech support 
+                              are about 17% less likely to churn than customers without tech support.", 
+                              "Customers with paperless billing are 21% more likely to churn than customers 
+                              without paperless billing.")) %>% 
+  arrange(desc(OddsRatio)) 
+```
+
+# Conclusion
+
+In predicting customer attrition, logistic regression produced the highest Area Under the Curve, F1 score, and specificity. Some of the most important predictors of customer attrition include `Tenure`, `MonthlyCharges`, `InternetService`, `PaymentMethod`, `Contract`, `OnlineSecurity`, `TechSupport`, and `PaperlessBilling`. We also found that the most significant relationships from our logistic model are the customer’s monthly charges, the type of internet service and contract they have, and the length of time they have been customers with Telco. To proactively reduce their churn rate, Telco could target customers who are on month-to-month contracts, use fiber optic internet, have higher monthly charges on average, and who have a shorter tenure of less than 18 months, which is the average tenure of their former customers.
+
+### Thank you for reading!
+
+## References
+
+Chawla, N. V., Bowyer, K. W., Hall, L. O., and Kegelmeyer, W. P. (2002). *Smote: Synthetic minority over-sampling technique*. Journal of Artificial Intelligence Research, 16:321-357.
+
+Hanley, J. A., & Mcneil, B. J. (1982). *The Meaning and Use of the Area Under a Receiver Operating Characteristic (ROC) Curve*. Radiology, 143(1), 29-36. doi:10.1148/radiology.143.1.7063747
+
+Hastie, T., Tibshirani, R., & Friedman, J. H. (2009). *The Elements of Statistical Learning: Data Mining, Inference, and Prediction*. 2nd ed. New York, NY: Springer.
+
+James, G., Witten, D., Hastie, T., & Tibshirani, R. (2013). *An Introduction to Statistical Learning with Applications in R*. New York, NY: Springer. 
+
+Torgo, L. (2010) *Data Mining using R: learning with case studies*, CRC Press (ISBN: 9781439810187). http://www.dcc.fc.up.pt/~ltorgo/DataMiningWithR
+
