@@ -11,7 +11,7 @@ Retaining customers is key to a company's success, especially in an industry as 
 
 # Data Overview
 
-The [dataset](https://www.kaggle.com/datasets/blastchar/telco-customer-churn) from Telco consists of 7,043 records with twenty attributes divided into two categories: customer demographic data and  information related to their wireless accounts. The demographic features include the customer's gender, whether they have a partner, dependents, and are 65 years or older. The features related to their account information include how long the customer has been with Telco, their monthly and total charges, the contract each customer carries (month-to-month, one year, or two years), and the type of phone, internet, and TV services they have. Our target variable for this study is `Churn`, a binary indicator that represents whether or not the customer left within the last month. 
+Telco consists of 7,043 records with twenty attributes divided into two categories: customer demographic data and  information related to their wireless accounts. The demographic features include the customer's gender, whether they have a partner, dependents, and are 65 years or older. The features related to their account information include how long the customer has been with Telco, their monthly and total charges, the contract each customer carries (month-to-month, one year, or two years), and the type of phone, internet, and TV services they have. Our target variable for this study is `Churn`, a binary indicator that represents whether or not the customer left within the last month. 
 
 There were 11 customers with missing `TotalCharges`. Since it is a fairly small amount, these observations will be removed prior to beginning the analysis, leaving 7,032 customers in the data set. In addition, several of the `Yes`/`No` categorical variables contained an additional group indicating that the customer had no phone or internet service. These were recoded and combined with the value `No`.
 
@@ -180,7 +180,7 @@ The correlations between our numeric variables show that `TotalCharges` is stron
 
 # Data Preprocessing
 
-Our target variable, `Churn`, is quite imbalanced with a little over 26% (1,869 customers) leaving the company within the past month. Since class imbalance can negatively affect the precision and recall accuracy of statistical models, I will use a **s**ynthetic **m**inority **o**ver-sampling **te**chnique known as **[smote](https://rdrr.io/cran/performanceEstimation/man/smote.html)** to create a more evenly distributed training set. 
+Our target variable, `Churn`, is quite imbalanced with a little over 26% (1,869 customers) leaving the company within the past month. Since class imbalance can negatively affect the precision and recall accuracy of statistical models, I will use a **s**ynthetic **m**inority **o**ver-sampling **te**chnique. 
 
 The `smote` algorithm artificially generates new instances of the minority class using the nearest neighbors of these cases and under-samples the majority class to create a more balanced data set. After applying `smote`, our training set now consists of an equal proportion of current and former customers.
 
@@ -234,7 +234,6 @@ do.call(rbind, lapply(chi, tidy)) %>%
 
 ## Variable Importance
 
-The random forest algorithm uses two measures in calculating variable importance, mean decrease in Gini and mean decrease in accuracy. The [mean decrease in Gini](https://www.rdocumentation.org/packages/randomForest/versions/4.6-14/topics/importance) is the total decrease in node impurities from splitting on the variable measured by the Gini index, averaged over all trees in the model. The [mean decrease in accuracy](https://www.rdocumentation.org/packages/randomForest/versions/4.6-14/topics/importance), also called permutation importance, measures the average decrease in prediction accuracy when the values of each variable are randomly permuted in the out-of-bag samples.
 
 ```{r}
 set.seed(1)
@@ -374,7 +373,6 @@ Out of the four models, logistic regression produces the highest [F1 score](http
 
 ## ROC Curves
 
-As a final step in model selection, I will plot the ROC curves of each model with their corresponding Area Under the Curve [(AUC)](https://developers.google.com/machine-learning/crash-course/classification/roc-and-auc). The Area Under the Curve measures the model's performance across all possible classification thresholds. A higher AUC indicates the model is better able to distinguish between the classes. 
 
 ```{r}
 Logistic <- predict(glm.fit, telco.test, type = "prob")[,2]
@@ -401,7 +399,7 @@ rocplot +
   scale_color_discrete(breaks = c("Logistic", "QDA", "SVM", "RandomForest"))
 ```
 
-Out of the four classifiers, the logistic model has the highest Area Under the Curve of 0.854 on the test set. This represents the probability that our model will rate or rank a randomly chosen observation from the positive class, `Churn = Yes`, as more likely to be from that class than a randomly chosen nonpositive observation, `Churn = No` [(Hanley & McNeil, 1982)](https://pubs.rsna.org/doi/pdf/10.1148/radiology.143.1.7063747).
+Out of the four classifiers, the logistic model has the highest Area Under the Curve of 0.854 on the test set. This represents the probability that our model will rate or rank a randomly chosen observation from the positive class, `Churn = Yes`, as more likely to be from that class than a randomly chosen nonpositive observation, `Churn = No` 
 
 # Key Findings
 
